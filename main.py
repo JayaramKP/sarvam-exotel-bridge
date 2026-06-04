@@ -2,16 +2,55 @@ import os
 import json
 import asyncio
 import base64
-import audioop
+import struct
 import websockets
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
 SARVAM_API_KEY = os.environ.get('SARVAM_API_KEY', 'sk_tcrxdvzl_c3m4CuhdXiuE3vL1rhKnCKY8')
 SARVAM_WS_URL = 'wss://api.sarvam.ai/v1/realtime'
 SYSTEM_PROMPT = 'You are Aria, Outbound SDR for Briskinfosec. Qualify cybersecurity needs and book a 20-min discovery meeting. Be professional and consultative.'
+
+# G.711 mu-law (ulaw) decode/encode - pure Python (audioop removed in Python 3.13+)
+ULAW_BIAS = 33
+ULAW_CLIP = 32635
+EXP_TABLE = [0, 132, 396, 924, 1980, 4092, 8316, 16764]
+
+
+def ulaw2lin(data: bytes) -> bytes:
+    """Convert u-law bytes to 16-bit signed PCM bytes."""
+    result = bytearray(len(data) * 2)
+    for i, byte in enumerate(data):
+        byte = ~byte & 0xFF
+        sign = byte & 0x80
+        exponent = (byte >> 4) & 0x07
+        mantissa = byte & 0x0F
+        sample = EXP_TABLE[exponent] + (mantissa << (exponent + 3))
+        if sign:
+            sample = -sample
+        struct.pack_into('<h', result, i * 2, sample)
+    return bytes(result)
+
+
+def lin2ulaw(data: bytes) -> bytes:
+    """Convert 16-bit signed PCM bytes to u-law bytes."""
+    result = bytearray(len(data) // 2)
+    for i in range(len(data) // 2):
+        sample = struct.unpack_from('<h', data, i * 2)[0]
+        sign = 0
+        if sample < 0:
+            sample = -sample
+            sign = 0x80
+        sample = min(sample, ULAW_CLIP) + ULAW_BIAS
+        exp = 7
+        for e in range(7, -1, -1):
+            if sample >= (1 << (e + 3)):
+                exp = e
+                break
+        mantissa = (sample >> (exp + 3)) & 0x0F
+        result[i] = ~(sign | (exp << 4) | mantissa) & 0xFF
+    return bytes(result)
 
 
 @app.get('/')
@@ -21,11 +60,6 @@ async def health():
 
 @app.websocket('/sarvam-ws')
 async def voicebot_websocket(websocket: WebSocket):
-    """
-    Exotel Voicebot applet connects here with bidirectional audio.
-    Exotel sends raw mulaw-8 (8kHz, 8-bit) audio as binary frames.
-    We convert to PCM16 for Sarvam and back to mulaw for Exotel.
-    """
     await websocket.accept()
     print('Exotel Voicebot connected')
 
@@ -38,7 +72,6 @@ async def voicebot_websocket(websocket: WebSocket):
         async with websockets.connect(SARVAM_WS_URL, extra_headers=sarvam_headers) as sarvam_ws:
             print('Connected to Sarvam Realtime API')
 
-            # Initialize Sarvam session
             await sarvam_ws.send(json.dumps({
                 'type': 'session.update',
                 'session': {
@@ -56,7 +89,6 @@ async def voicebot_websocket(websocket: WebSocket):
             }))
 
             async def exotel_to_sarvam():
-                """Receive mulaw audio from Exotel, convert to PCM16, send to Sarvam"""
                 try:
                     while True:
                         try:
@@ -65,19 +97,16 @@ async def voicebot_websocket(websocket: WebSocket):
                             break
                         if not data:
                             continue
-                        # Convert mulaw-8 (8kHz) to PCM16 (8kHz)
-                        pcm16 = audioop.ulaw2lin(data, 2)
-                        # Base64 encode for Sarvam
+                        pcm16 = ulaw2lin(data)
                         audio_b64 = base64.b64encode(pcm16).decode('utf-8')
                         await sarvam_ws.send(json.dumps({
                             'type': 'input_audio_buffer.append',
                             'audio': audio_b64
                         }))
-                except (WebSocketDisconnect, Exception) as e:
+                except Exception as e:
                     print(f'exotel_to_sarvam ended: {e}')
 
             async def sarvam_to_exotel():
-                """Receive PCM16 audio from Sarvam, convert to mulaw, send to Exotel"""
                 try:
                     async for msg in sarvam_ws:
                         try:
@@ -88,8 +117,7 @@ async def voicebot_websocket(websocket: WebSocket):
                             audio_b64 = data.get('delta', '')
                             if audio_b64:
                                 pcm16 = base64.b64decode(audio_b64)
-                                # Convert PCM16 back to mulaw-8
-                                mulaw = audioop.lin2ulaw(pcm16, 2)
+                                mulaw = lin2ulaw(pcm16)
                                 await websocket.send_bytes(mulaw)
                         elif data.get('type') == 'error':
                             print(f'Sarvam error: {data}')
@@ -107,4 +135,3 @@ async def voicebot_websocket(websocket: WebSocket):
             await websocket.close()
         except Exception:
             pass
-        print('Bridge session ended')
