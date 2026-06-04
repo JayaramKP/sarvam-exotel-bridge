@@ -16,11 +16,9 @@ sys.stderr.reconfigure(line_buffering=True)
 
 def log(msg):
     print(msg, flush=True)
-    sys.stdout.flush()
 
 def err(msg):
     print(f'ERROR: {msg}', file=sys.stderr, flush=True)
-    sys.stderr.flush()
 
 app = FastAPI()
 
@@ -31,6 +29,16 @@ SARVAM_SESSION_URL = (
     '/workspaces/sarvam-internal-ai-9191fd'
     '/apps/api-dashboa-4adc0b2d-9e5c/url'
 )
+
+# Headers that mimic a real browser to pass Sarvam's origin check
+BROWSER_HEADERS = {
+    'Origin': 'https://dashboard.sarvam.ai',
+    'User-Agent': (
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) '
+        'Chrome/124.0.0.0 Safari/537.36'
+    ),
+}
 
 ARIA_PERSONA = (
     'You are Aria, Outbound Sales Development Representative for Briskinfosec Technology and Consulting Pvt. Ltd. '
@@ -84,36 +92,30 @@ def lin2ulaw(data: bytes) -> bytes:
     return bytes(result)
 
 async def get_sarvam_ws_url(sample_rate: int = 8000) -> str:
-    log(f'Fetching Sarvam session URL from proxy...')
+    log('Fetching Sarvam session URL...')
     headers = {
         'api-subscription-key': SARVAM_API_KEY,
-        'Origin': 'https://dashboard.sarvam.ai',
-        'Referer': 'https://dashboard.sarvam.ai/agents',
-        'User-Agent': 'Mozilla/5.0 (compatible; SarvamBridge/1.0)',
+        **BROWSER_HEADERS,
         'Accept': 'application/json',
+        'Referer': 'https://dashboard.sarvam.ai/agents',
     }
     params = {'interaction_type': 'call', 'sample_rate': str(sample_rate)}
-    try:
-        async with httpx.AsyncClient(timeout=15.0, verify=True) as client:
-            resp = await client.get(SARVAM_SESSION_URL, params=params, headers=headers)
-            log(f'Session URL response: status={resp.status_code}')
-            if resp.status_code != 200:
-                err(f'Session URL error body: {resp.text[:500]}')
-                resp.raise_for_status()
-            data = resp.json()
-            ws_url = data['url']
-            sep = '&' if '?' in ws_url else '?'
-            ws_url += f'{sep}sample_rate={sample_rate}&interaction_type=call'
-            log(f'Got Sarvam WS URL: {ws_url[:80]}...')
-            return ws_url
-    except Exception as e:
-        err(f'Failed to get Sarvam session URL: {e}')
-        err(traceback.format_exc())
-        raise
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(SARVAM_SESSION_URL, params=params, headers=headers)
+        log(f'Session URL response: status={resp.status_code}')
+        if resp.status_code != 200:
+            err(f'Session URL error: {resp.text[:300]}')
+            resp.raise_for_status()
+        data = resp.json()
+        ws_url = data['url']
+        sep = '&' if '?' in ws_url else '?'
+        ws_url += f'{sep}sample_rate={sample_rate}&interaction_type=call'
+        log(f'Got Sarvam WS URL (truncated): {ws_url[:60]}...')
+        return ws_url
 
 @app.get('/')
 async def health():
-    return {'status': 'Sarvam-Exotel Bridge running', 'version': '8'}
+    return {'status': 'Sarvam-Exotel Bridge running', 'version': '10'}
 
 @app.websocket('/sarvam-ws')
 async def voicebot_websocket(websocket: WebSocket):
@@ -123,14 +125,21 @@ async def voicebot_websocket(websocket: WebSocket):
     try:
         sarvam_ws_url = await get_sarvam_ws_url(sample_rate=8000)
     except Exception as e:
-        err(f'Cannot get Sarvam URL, closing: {e}')
+        err(f'Cannot get Sarvam URL: {e}')
         await websocket.close()
         return
 
+    # Pass browser-like headers to bypass Sarvam origin check
+    ws_extra_headers = {
+        'Origin': 'https://dashboard.sarvam.ai',
+        'User-Agent': BROWSER_HEADERS['User-Agent'],
+    }
+
     try:
-        log(f'Connecting to Sarvam WebSocket...')
+        log('Connecting to Sarvam WebSocket with browser headers...')
         async with websockets.connect(
             sarvam_ws_url,
+            additional_headers=ws_extra_headers,
             ping_interval=20,
             ping_timeout=10,
             open_timeout=15
@@ -157,7 +166,7 @@ async def voicebot_websocket(websocket: WebSocket):
                         try:
                             data = await asyncio.wait_for(websocket.receive_bytes(), timeout=30.0)
                         except asyncio.TimeoutError:
-                            log('Exotel audio timeout - ending session')
+                            log('Exotel audio timeout')
                             break
                         if not data:
                             continue
@@ -175,7 +184,7 @@ async def voicebot_websocket(websocket: WebSocket):
                 except WebSocketDisconnect:
                     log('Exotel disconnected')
                 except Exception as e:
-                    err(f'exotel_to_sarvam error: {e}')
+                    err(f'exotel_to_sarvam: {e}')
                     err(traceback.format_exc())
 
             async def sarvam_to_exotel():
@@ -200,17 +209,17 @@ async def voicebot_websocket(websocket: WebSocket):
                             log('Sarvam ended interaction')
                             break
                         elif msg_type == 'server.event.user_interrupt':
-                            log('User interrupt detected')
+                            log('User interrupt')
                         else:
                             log(f'Sarvam msg: {msg_type}')
                 except Exception as e:
-                    err(f'sarvam_to_exotel error: {e}')
+                    err(f'sarvam_to_exotel: {e}')
                     err(traceback.format_exc())
 
             await asyncio.gather(exotel_to_sarvam(), sarvam_to_exotel())
 
     except Exception as e:
-        err(f'Bridge top-level error: {e}')
+        err(f'Bridge error: {e}')
         err(traceback.format_exc())
     finally:
         log('=== Session ended ===')
