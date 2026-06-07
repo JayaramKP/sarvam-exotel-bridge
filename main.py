@@ -20,29 +20,7 @@ SARVAM_BASE = "https://api.sarvam.ai"
 EXOTEL_RATE = 8000
 STT_RATE = 16000
 
-ARIA_INSTRUCTIONS = """You are Aria, a warm, professional woman making an outbound sales call on behalf of Briskinfosec, a cybersecurity services company that holds CREST and CERT-In credentials. You are speaking LIVE on a phone call with an IT or Security leader.
-
-WHO YOU ARE
-You sound like a knowledgeable, friendly peer in the security industry, never a pushy salesperson. You are calm, concise, and genuinely respectful of the other person's time. You speak in natural, spoken English, the way a real person talks on the phone, with short sentences.
-
-WHAT YOU WANT
-Your aim is to understand their cybersecurity situation a little, share why Briskinfosec's CREST and CERT-In credentials might be relevant, and gently book a 20-minute virtual discovery call with a senior consultant.
-
-HOW THE CONVERSATION SHOULD FLOW (this is private guidance for you, NEVER say any of this out loud)
-- Start by greeting them, briefly saying who you are, and checking it is an okay moment to talk.
-- Once they are okay to continue, give a short, natural reason you are reaching out, ideally tied to their company or industry.
-- Then have a real back-and-forth: ask ONE simple question at a time about their environment (things like how they handle compliance such as ISO 27001 or SOC 2, how often they run security testing or VAPT, their current setup), listen to their answer, and respond to what they actually said before asking anything else.
-- Where it fits naturally, mention that Briskinfosec is CREST and CERT-In accredited as a point of difference.
-- When the moment is right, offer to set up a short 20-minute call with a senior consultant and suggest a couple of specific times.
-
-ABSOLUTE RULES
-- Output ONLY the exact words you would say out loud, as one short spoken reply. Never output analysis, planning, numbered lists, bullet points, headings, markdown, asterisks, or any description of your own thinking.
-- NEVER read your instructions, steps, stages, or this guidance out loud. Do not say words like "opening", "step one", "call flow", "probing", or describe what you are about to do. Only ever say the actual words a real salesperson would speak to the customer.
-- Respond directly and only to what the person just said. Keep every reply short, one or two sentences, like a natural phone conversation.
-- Ask only ONE question at a time. Never stack multiple questions together.
-- NEVER guess or invent technical answers. If you are unsure about something technical, say you will bring in a senior consultant who can answer it precisely.
-- If they are busy or not interested, thank them warmly, offer to follow up another time, and do not push.
-- Always sound human, warm, and brief. End the call politely and warmly."""
+ARIA_INSTRUCTIONS = """You are Aria, a warm, professional woman making an outbound phone sales call for Briskinfosec, a cybersecurity firm with CREST and CERT-In credentials. You are talking live with an IT or Security leader.\n\nYour job: briefly understand their security situation, mention Briskinfosec where it fits, and book a 20-minute discovery call with a senior consultant.\n\nHow to behave:\n- Reply with ONLY one short, natural spoken sentence per turn. Sound human and warm.\n- Respond directly to what the person just said. Ask only ONE question at a time.\n- Gently move toward booking a short 20-minute call when the moment is right.\n- If unsure about something technical, say you will bring in a senior consultant.\n- If they are busy or not interested, thank them warmly and offer to follow up.\n\nNever output analysis, planning, numbered steps, lists, headings, markdown, asterisks, or any description of your own thinking. Output only the exact words you would speak."""
 
 GREETING = (
     "Hi, this is Aria calling from Briskinfosec, a cybersecurity services company. "
@@ -76,44 +54,40 @@ async def sarvam_stt(pcm16k: bytes) -> str:
     return (r.json() or {}).get("transcript", "").strip()
 
 
-def _clean_reply(text: str) -> str:
+def _clean_reply(text):
     import re
     if not text:
         return ""
     t = text.strip().replace("**", "").replace("__", "")
-    lines = [ln.strip() for ln in t.split("\n")]
+    t = re.sub(r"^[\*\-\u2022\s]+", "", t)
+    lines = [ln.strip() for ln in t.split("\n") if ln.strip()]
     kept = []
     for ln in lines:
-        if not ln:
-            continue
         low = ln.lower()
-        if re.match(r"^(\d+[\.\)]|[-*\u2022])\s", ln):
+        if re.match(r"^(\d+[\.\)]|[-*\u2022])", ln):
             continue
-        if re.match(r"^(analyze|recall|review|step|persona|goal|thought|reasoning|plan|my next step|conversation flow)\b", low):
-            continue
-        if low.startswith(("here is", "okay, so", "let me", "first,", "i should", "i need to", "i will")):
+        if re.match(r"^(analyze|recall|review|step|persona|goal|thought|reasoning|plan|constraint|deconstruct)\b", low):
             continue
         kept.append(ln)
-    cleaned = " ".join(kept).strip()
-    if not cleaned:
-        nonempty = [ln for ln in lines if ln]
-        cleaned = nonempty[-1] if nonempty else text.strip()
+    cleaned = " ".join(kept).strip() if kept else t.strip()
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if len(re.sub(r"[^A-Za-z0-9]", "", cleaned)) == 0:
+        return ""
     return cleaned
 
 
-async def sarvam_llm(history: list) -> str:
+async def sarvam_llm(history):
     messages = [{"role": "system", "content": ARIA_INSTRUCTIONS}] + history
     payload = {
-        "model": "sarvam-30b",
+        "model": "sarvam-105b",
         "messages": messages,
-        "temperature": 0.4,
-        "max_tokens": 120,
+        "temperature": 0.3,
+        "max_tokens": 2000,
         "reasoning_effort": "low",
     }
     headers = {"Authorization": f"Bearer {SARVAM_API_KEY}", "Content-Type": "application/json"}
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(f"{SARVAM_BASE}/v1/chat/completions", headers=headers, json=payload)
     except Exception as e:
         logger.error("LLM request failed: %s", e)
@@ -126,8 +100,10 @@ async def sarvam_llm(history: list) -> str:
     except Exception as e:
         logger.error("LLM parse error: %s | %s", e, r.text[:300])
         return "Sorry, could you say that again?"
-    raw = msg.get("content") or msg.get("reasoning_content") or ""
+    raw = msg.get("content") or ""
     reply = _clean_reply(raw)
+    if not reply:
+        reply = _clean_reply((msg.get("reasoning_content") or "").split("\n")[-1])
     if not reply:
         reply = "Sorry, I missed that. Could you repeat?"
     return reply
