@@ -1,5 +1,2 @@
-fastapi
-uvicorn[standard]
-websockets
-httpx
-python-multipart
+livekit-agents[sarvam,openai,silero]
+python-dotenv
