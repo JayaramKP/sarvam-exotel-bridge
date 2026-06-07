@@ -3,7 +3,7 @@ import logging
 from dotenv import load_dotenv
 from livekit.agents import JobContext, WorkerOptions, cli
 from livekit.agents.voice import Agent, AgentSession
-from livekit.plugins import openai, sarvam
+from livekit.plugins import sarvam
 
 load_dotenv()
 
@@ -60,8 +60,10 @@ class AriaSDRAgent(Agent):
                 mode="transcribe",
                 flush_signal=True,
             ),
-            # LLM - the reasoning brain
-            llm=openai.LLM(model="gpt-4o"),
+            # Sarvam LLM - the reasoning brain (OpenAI-compatible, tuned for India)
+            llm=sarvam.LLM(
+                model="sarvam-30b",
+            ),
             # Bulbul v3 TTS - text to speech
             tts=sarvam.TTS(
                 target_language_code="en-IN",
