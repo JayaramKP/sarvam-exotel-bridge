@@ -54,40 +54,18 @@ async def sarvam_stt(pcm16k: bytes) -> str:
     return (r.json() or {}).get("transcript", "").strip()
 
 
-def _clean_reply(text):
-    import re
-    if not text:
-        return ""
-    t = text.strip().replace("**", "").replace("__", "")
-    t = re.sub(r"^[\*\-\u2022\s]+", "", t)
-    lines = [ln.strip() for ln in t.split("\n") if ln.strip()]
-    kept = []
-    for ln in lines:
-        low = ln.lower()
-        if re.match(r"^(\d+[\.\)]|[-*\u2022])", ln):
-            continue
-        if re.match(r"^(analyze|recall|review|step|persona|goal|thought|reasoning|plan|constraint|deconstruct)\b", low):
-            continue
-        kept.append(ln)
-    cleaned = " ".join(kept).strip() if kept else t.strip()
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    if len(re.sub(r"[^A-Za-z0-9]", "", cleaned)) == 0:
-        return ""
-    return cleaned
-
-
 async def sarvam_llm(history):
     messages = [{"role": "system", "content": ARIA_INSTRUCTIONS}] + history
     payload = {
         "model": "sarvam-105b",
         "messages": messages,
-        "temperature": 0.3,
-        "max_tokens": 2000,
-        "reasoning_effort": "low",
+        "temperature": 0.4,
+        "max_tokens": 200,
+        "reasoning_effort": None,
     }
     headers = {"Authorization": f"Bearer {SARVAM_API_KEY}", "Content-Type": "application/json"}
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=15) as client:
             r = await client.post(f"{SARVAM_BASE}/v1/chat/completions", headers=headers, json=payload)
     except Exception as e:
         logger.error("LLM request failed: %s", e)
@@ -100,10 +78,7 @@ async def sarvam_llm(history):
     except Exception as e:
         logger.error("LLM parse error: %s | %s", e, r.text[:300])
         return "Sorry, could you say that again?"
-    raw = msg.get("content") or ""
-    reply = _clean_reply(raw)
-    if not reply:
-        reply = _clean_reply((msg.get("reasoning_content") or "").split("\n")[-1])
+    reply = (msg.get("content") or "").strip()
     if not reply:
         reply = "Sorry, I missed that. Could you repeat?"
     return reply
