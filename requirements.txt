@@ -1,2 +1,2 @@
-livekit-agents[sarvam,openai,silero]
+livekit-agents[sarvam,silero]
 python-dotenv
