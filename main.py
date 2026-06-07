@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import os
+import time
 import wave
 
 import httpx
@@ -30,7 +31,8 @@ About Briskinfosec (use only this, do not invent other product names):
 
 How to behave:
 - Reply with ONLY one short, natural spoken sentence per turn. Keep it under 25 words. Sound human and warm.
-- Respond directly to what the person just said. Ask only ONE question at a time.
+- Respond directly to what the person just said. Ask only ONE question at a time, then wait for their answer.
+- Do not repeat yourself. If you already asked something, move on.
 - Gently move toward booking a short 20-minute call when the moment is right.
 - If the caller mentions a product or name you do not recognise, do NOT pretend to know it; politely ask them to clarify what they mean.
 - Never invent prices, product names, or technical claims. For exact pricing or deep technical detail, offer to bring in a senior consultant.
@@ -143,6 +145,24 @@ async def media(ws: WebSocket):
     audio_buf = bytearray()
     silence_ms = 0
     speaking = False
+    # Guard: while the bot is talking (and a short cooldown after), ignore
+    # inbound audio so the bot does not transcribe its own echoed voice.
+    bot_busy = False
+    mute_until = 0.0
+
+    async def say(text):
+        nonlocal bot_busy, mute_until, audio_buf, speaking, silence_ms
+        bot_busy = True
+        out = await sarvam_tts(text)
+        if out:
+            await send_audio(ws, stream_sid, out)
+        # flush any audio captured during playback (echo) and mute briefly
+        audio_buf = bytearray()
+        speaking = False
+        silence_ms = 0
+        mute_until = time.monotonic() + 0.6
+        bot_busy = False
+
     try:
         while True:
             raw = await ws.receive_text()
@@ -155,37 +175,38 @@ async def media(ws: WebSocket):
             elif etype == "start":
                 stream_sid = ev["start"]["stream_sid"]
                 logger.info("start stream_sid=%s", stream_sid)
-                pcm = await sarvam_tts(GREETING)
                 history.append({"role": "assistant", "content": GREETING})
-                if pcm:
-                    await send_audio(ws, stream_sid, pcm)
+                await say(GREETING)
 
             elif etype == "media":
+                # Drop inbound audio while bot is speaking or during cooldown
+                if bot_busy or time.monotonic() < mute_until:
+                    continue
                 chunk = base64.b64decode(ev["media"]["payload"])
                 rms = audioop.rms(chunk, 2)
-                if rms > 500:
+                if rms > 700:
                     speaking = True
                     silence_ms = 0
                     audio_buf.extend(chunk)
                 elif speaking:
                     audio_buf.extend(chunk)
                     silence_ms += len(chunk) / 2 / EXOTEL_RATE * 1000
-                    if silence_ms > 600 and len(audio_buf) > EXOTEL_RATE:
+                    if silence_ms > 700 and len(audio_buf) > EXOTEL_RATE:
                         utter = bytes(audio_buf)
                         audio_buf = bytearray()
                         speaking = False
                         silence_ms = 0
                         pcm16k, _ = audioop.ratecv(utter, 2, 1, EXOTEL_RATE, STT_RATE, None)
                         text = await sarvam_stt(pcm16k)
-                        if text:
-                            logger.info("USER: %s", text)
-                            history.append({"role": "user", "content": text})
-                            reply = await sarvam_llm(history)
-                            logger.info("ARIA: %s", reply)
-                            history.append({"role": "assistant", "content": reply})
-                            out = await sarvam_tts(reply)
-                            if out:
-                                await send_audio(ws, stream_sid, out)
+                        text = text.strip()
+                        if len(text) < 2:
+                            continue
+                        logger.info("USER: %s", text)
+                        history.append({"role": "user", "content": text})
+                        reply = await sarvam_llm(history)
+                        logger.info("ARIA: %s", reply)
+                        history.append({"role": "assistant", "content": reply})
+                        await say(reply)
 
             elif etype == "stop":
                 logger.info("stop")
