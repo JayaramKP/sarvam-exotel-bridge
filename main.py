@@ -91,14 +91,33 @@ async def sarvam_stt(pcm16k: bytes) -> str:
 
 async def sarvam_llm(history: list) -> str:
     messages = [{"role": "system", "content": ARIA_INSTRUCTIONS}] + history
-    payload = {"model": "sarvam-105b", "messages": messages, "temperature": 0.5, "max_tokens": 200}
+    payload = {
+        "model": "sarvam-30b",
+        "messages": messages,
+        "temperature": 0.5,
+        "max_tokens": 250,
+        "reasoning_effort": "low",
+    }
     headers = {"Authorization": f"Bearer {SARVAM_API_KEY}", "Content-Type": "application/json"}
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(f"{SARVAM_BASE}/v1/chat/completions", headers=headers, json=payload)
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(f"{SARVAM_BASE}/v1/chat/completions", headers=headers, json=payload)
+    except Exception as e:
+        logger.error("LLM request failed: %s", e)
+        return "Sorry, could you say that again?"
     if r.status_code != 200:
         logger.error("LLM error %s: %s", r.status_code, r.text[:300])
-        return "I'm sorry, could you say that again?"
-    return r.json()["choices"][0]["message"]["content"].strip()
+        return "Sorry, could you say that again?"
+    try:
+        msg = r.json()["choices"][0]["message"]
+    except Exception as e:
+        logger.error("LLM parse error: %s | %s", e, r.text[:300])
+        return "Sorry, could you say that again?"
+    reply = msg.get("content") or msg.get("reasoning_content") or ""
+    reply = reply.strip()
+    if not reply:
+        reply = "Sorry, I missed that. Could you repeat?"
+    return reply
 
 
 async def sarvam_tts(text: str) -> bytes:
