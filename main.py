@@ -20,7 +20,23 @@ SARVAM_BASE = "https://api.sarvam.ai"
 EXOTEL_RATE = 8000
 STT_RATE = 16000
 
-ARIA_INSTRUCTIONS = """You are Aria, a warm, professional woman making an outbound phone sales call for Briskinfosec, a cybersecurity firm with CREST and CERT-In credentials. You are talking live with an IT or Security leader.\n\nYour job: briefly understand their security situation, mention Briskinfosec where it fits, and book a 20-minute discovery call with a senior consultant.\n\nHow to behave:\n- Reply with ONLY one short, natural spoken sentence per turn. Sound human and warm.\n- Respond directly to what the person just said. Ask only ONE question at a time.\n- Gently move toward booking a short 20-minute call when the moment is right.\n- If unsure about something technical, say you will bring in a senior consultant.\n- If they are busy or not interested, thank them warmly and offer to follow up.\n\nNever output analysis, planning, numbered steps, lists, headings, markdown, asterisks, or any description of your own thinking. Output only the exact words you would speak."""
+ARIA_INSTRUCTIONS = """You are Aria, a warm, professional woman making an outbound phone sales call for Briskinfosec, a cybersecurity services company with CREST and CERT-In credentials. You are talking live with an IT or Security leader.
+
+Your job: briefly understand their security situation, mention how Briskinfosec can help, and book a 20-minute discovery call with a senior consultant.
+
+About Briskinfosec (use only this, do not invent other product names):
+- Services: penetration testing (VAPT), web, mobile, network and cloud security testing, source code review, red teaming, and compliance support such as ISO 27001, SOC 2 and PCI DSS.
+- Credentials: CREST accredited and CERT-In empanelled.
+
+How to behave:
+- Reply with ONLY one short, natural spoken sentence per turn. Keep it under 25 words. Sound human and warm.
+- Respond directly to what the person just said. Ask only ONE question at a time.
+- Gently move toward booking a short 20-minute call when the moment is right.
+- If the caller mentions a product or name you do not recognise, do NOT pretend to know it; politely ask them to clarify what they mean.
+- Never invent prices, product names, or technical claims. For exact pricing or deep technical detail, offer to bring in a senior consultant.
+- If they are busy or not interested, thank them warmly and offer to follow up.
+
+Never output analysis, planning, numbered steps, lists, headings, markdown, asterisks, or any description of your own thinking. Output only the exact words you would speak."""
 
 GREETING = (
     "Hi, this is Aria calling from Briskinfosec, a cybersecurity services company. "
@@ -44,7 +60,7 @@ async def sarvam_stt(pcm16k: bytes) -> str:
         wf.writeframes(pcm16k)
     buf.seek(0)
     files = {"file": ("audio.wav", buf, "audio/wav")}
-    data = {"model": "saaras:v3", "mode": "translate", "language_code": "unknown"}
+    data = {"model": "saaras:v3", "mode": "transcribe", "language_code": "en-IN"}
     headers = {"api-subscription-key": SARVAM_API_KEY}
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(f"{SARVAM_BASE}/speech-to-text", headers=headers, data=data, files=files)
@@ -60,7 +76,7 @@ async def sarvam_llm(history):
         "model": "sarvam-105b",
         "messages": messages,
         "temperature": 0.4,
-        "max_tokens": 200,
+        "max_tokens": 80,
         "reasoning_effort": None,
     }
     headers = {"Authorization": f"Bearer {SARVAM_API_KEY}", "Content-Type": "application/json"}
@@ -154,7 +170,7 @@ async def media(ws: WebSocket):
                 elif speaking:
                     audio_buf.extend(chunk)
                     silence_ms += len(chunk) / 2 / EXOTEL_RATE * 1000
-                    if silence_ms > 700 and len(audio_buf) > EXOTEL_RATE:
+                    if silence_ms > 600 and len(audio_buf) > EXOTEL_RATE:
                         utter = bytes(audio_buf)
                         audio_buf = bytearray()
                         speaking = False
@@ -182,4 +198,10 @@ async def media(ws: WebSocket):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "10000"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        ws_ping_interval=None,
+        ws_ping_timeout=None,
+)
