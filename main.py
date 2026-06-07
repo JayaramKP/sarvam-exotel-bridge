@@ -91,7 +91,7 @@ async def sarvam_stt(pcm16k: bytes) -> str:
 
 async def sarvam_llm(history: list) -> str:
     messages = [{"role": "system", "content": ARIA_INSTRUCTIONS}] + history
-    payload = {"model": "sarvam-m", "messages": messages, "temperature": 0.5, "max_tokens": 200}
+    payload = {"model": "sarvam-105b", "messages": messages, "temperature": 0.5, "max_tokens": 200}
     headers = {"Authorization": f"Bearer {SARVAM_API_KEY}", "Content-Type": "application/json"}
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(f"{SARVAM_BASE}/v1/chat/completions", headers=headers, json=payload)
