@@ -149,6 +149,7 @@ async def media(ws: WebSocket):
     # inbound audio so the bot does not transcribe its own echoed voice.
     bot_busy = False
     mute_until = 0.0
+    noise_floor = 200.0  # adaptive ambient RMS estimate
 
     async def say(text):
         nonlocal bot_busy, mute_until, audio_buf, speaking, silence_ms
@@ -184,29 +185,37 @@ async def media(ws: WebSocket):
                     continue
                 chunk = base64.b64decode(ev["media"]["payload"])
                 rms = audioop.rms(chunk, 2)
-                if rms > 700:
+                frame_ms = len(chunk) / 2 / EXOTEL_RATE * 1000
+                # Dynamic speech gate: speech is clearly louder than ambient.
+                speech_gate = max(noise_floor * 2.2, 350)
+                if rms > speech_gate:
                     speaking = True
                     silence_ms = 0
                     audio_buf.extend(chunk)
                 elif speaking:
                     audio_buf.extend(chunk)
-                    silence_ms += len(chunk) / 2 / EXOTEL_RATE * 1000
-                    if silence_ms > 700 and len(audio_buf) > EXOTEL_RATE:
-                        utter = bytes(audio_buf)
-                        audio_buf = bytearray()
-                        speaking = False
-                        silence_ms = 0
-                        pcm16k, _ = audioop.ratecv(utter, 2, 1, EXOTEL_RATE, STT_RATE, None)
-                        text = await sarvam_stt(pcm16k)
-                        text = text.strip()
-                        if len(text) < 2:
-                            continue
-                        logger.info("USER: %s", text)
-                        history.append({"role": "user", "content": text})
-                        reply = await sarvam_llm(history)
-                        logger.info("ARIA: %s", reply)
-                        history.append({"role": "assistant", "content": reply})
-                        await say(reply)
+                    silence_ms += frame_ms
+                else:
+                    noise_floor = 0.95 * noise_floor + 0.05 * rms
+                buf_ms = len(audio_buf) / 2 / EXOTEL_RATE * 1000
+                end_by_silence = speaking and silence_ms >= 1200 and buf_ms >= 400
+                end_by_length = speaking and buf_ms >= 7000
+                if end_by_silence or end_by_length:
+                    utter = bytes(audio_buf)
+                    audio_buf = bytearray()
+                    speaking = False
+                    silence_ms = 0
+                    pcm16k, _ = audioop.ratecv(utter, 2, 1, EXOTEL_RATE, STT_RATE, None)
+                    text = await sarvam_stt(pcm16k)
+                    text = text.strip()
+                    if len(text) < 2:
+                        continue
+                    logger.info("USER: %s", text)
+                    history.append({"role": "user", "content": text})
+                    reply = await sarvam_llm(history)
+                    logger.info("ARIA: %s", reply)
+                    history.append({"role": "assistant", "content": reply})
+                    await say(reply)
 
             elif etype == "stop":
                 logger.info("stop")
