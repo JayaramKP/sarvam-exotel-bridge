@@ -150,6 +150,11 @@ async def media(ws: WebSocket):
     bot_busy = False
     mute_until = 0.0
     noise_floor = 200.0  # adaptive ambient RMS estimate
+    # Barge-in state: while the bot speaks we keep a HIGH-threshold VAD
+    # running; sustained caller speech sets interrupt and stops playback.
+    interrupt = False
+    barge_ms = 0.0
+    pending_barge = bytearray()
 
     import re as _re
     def _split_sentences(t):
@@ -166,27 +171,62 @@ async def media(ws: WebSocket):
                 out.append(p)
         return out or [t.strip()]
 
+    async def _send_pcm(pcm8k):
+        # Stream 8k PCM to the caller in chunks; bail out early if the
+        # caller barges in (interrupt flag set by the media handler).
+        nonlocal interrupt
+        CHUNK = 3200
+        for i in range(0, len(pcm8k), CHUNK):
+            if interrupt:
+                return False
+            chunk = pcm8k[i:i + CHUNK]
+            if len(chunk) % 320 != 0:
+                chunk += b"\x00" * (320 - (len(chunk) % 320))
+            await ws.send_text(json.dumps({
+                "event": "media",
+                "stream_sid": stream_sid,
+                "media": {"payload": base64.b64encode(chunk).decode("ascii")},
+            }))
+            await asyncio.sleep(0.09)
+        return True
+
     async def say(text):
         nonlocal bot_busy, mute_until, audio_buf, speaking, silence_ms
+        nonlocal interrupt, barge_ms, pending_barge
         bot_busy = True
+        interrupt = False
+        barge_ms = 0.0
+        pending_barge = bytearray()
         sentences = _split_sentences(text)
         # Pipeline: synthesize sentence N+1 while sentence N is being played,
         # so audio starts after only the first sentence's TTS latency.
         next_task = asyncio.create_task(sarvam_tts(sentences[0])) if sentences else None
         for idx in range(len(sentences)):
             out = await next_task if next_task else b""
-            # kick off TTS for the following sentence before we start playing this one
             if idx + 1 < len(sentences):
                 next_task = asyncio.create_task(sarvam_tts(sentences[idx + 1]))
             else:
                 next_task = None
             if out:
-                await send_audio(ws, stream_sid, out)
-        # flush any audio captured during playback (echo) and mute briefly
-        audio_buf = bytearray()
-        speaking = False
-        silence_ms = 0
-        mute_until = time.monotonic() + 0.6
+                finished = await _send_pcm(out)
+                if not finished:
+                    break  # caller barged in; stop talking
+        if next_task and not next_task.done():
+            next_task.cancel()
+        if interrupt:
+            logger.info("BARGE-IN: caller interrupted Aria")
+            audio_buf = bytearray(pending_barge)
+            speaking = len(audio_buf) > 0
+            silence_ms = 0
+            mute_until = 0.0
+        else:
+            audio_buf = bytearray()
+            speaking = False
+            silence_ms = 0
+            mute_until = time.monotonic() + 0.6
+        interrupt = False
+        barge_ms = 0.0
+        pending_barge = bytearray()
         bot_busy = False
 
     try:
@@ -205,10 +245,27 @@ async def media(ws: WebSocket):
                 await say(GREETING)
 
             elif etype == "media":
-                # Drop inbound audio while bot is speaking or during cooldown
-                if bot_busy or time.monotonic() < mute_until:
-                    continue
                 chunk = base64.b64decode(ev["media"]["payload"])
+                # While Aria is speaking, listen for a real interruption.
+                # Use a HIGH gate (well above her echo) and require sustained
+                # speech so echo or a stray "mm-hmm" does not cut her off.
+                if bot_busy:
+                    rms = audioop.rms(chunk, 2)
+                    frame_ms = len(chunk) / 2 / EXOTEL_RATE * 1000
+                    barge_gate = max(noise_floor * 3.5, 900)
+                    if rms > barge_gate:
+                        barge_ms += frame_ms
+                        pending_barge.extend(chunk)
+                    else:
+                        barge_ms = max(0.0, barge_ms - frame_ms)
+                        if barge_ms <= 0:
+                            pending_barge = bytearray()
+                    if barge_ms >= 320:
+                        interrupt = True
+                    continue
+                # Cooldown after Aria stops, to avoid trailing echo.
+                if time.monotonic() < mute_until:
+                    continue
                 rms = audioop.rms(chunk, 2)
                 frame_ms = len(chunk) / 2 / EXOTEL_RATE * 1000
                 # Dynamic speech gate: speech is clearly louder than ambient.
