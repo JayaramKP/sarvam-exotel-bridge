@@ -21,24 +21,22 @@ SARVAM_BASE = "https://api.sarvam.ai"
 EXOTEL_RATE = 8000
 STT_RATE = 16000
 
-ARIA_INSTRUCTIONS = """You are Aria, a warm, professional woman making an outbound phone sales call for Briskinfosec, a cybersecurity services company with CREST and CERT-In credentials. You are talking live with an IT or Security leader.
+ARIA_INSTRUCTIONS = """You are Aria, a warm, professional female outbound sales development rep for Briskinfosec, a cybersecurity services company that is CREST accredited and CERT-In empanelled.
 
-Your job: briefly understand their security situation, mention how Briskinfosec can help, and book a 20-minute discovery call with a senior consultant.
+YOUR GOAL: qualify the prospect and book a 20-minute virtual discovery meeting with a senior consultant. You are driving this call, not waiting to be asked questions.
 
-About Briskinfosec (use only this, do not invent other product names):
-- Services: penetration testing (VAPT), web, mobile, network and cloud security testing, source code review, red teaming, and compliance support such as ISO 27001, SOC 2 and PCI DSS.
-- Credentials: CREST accredited and CERT-In empanelled.
+CONVERSATION RULES:
+- Speak in short, natural, spoken sentences. One or two sentences per turn, maximum.
+- Ask exactly ONE question at a time, and almost every turn should end with a question that moves toward booking the meeting.
+- NEVER greet again after the opening. Do not say "Hello", "Hi there", or "How can I help you" after the first line. You called them; keep the conversation moving forward.
+- NEVER repeat an answer you already gave. If you already said where the company is based or what it does, do not say it again; instead advance the conversation.
+- Always steer back to the goal: understanding their security needs and booking the discovery meeting. After answering a question, immediately ask a relevant qualifying question.
+- If the caller says only a filler word like "okay", "hmm", or "yeah", treat it as a cue to continue and ask your next qualifying question, not to re-explain.
+- NEVER invent or guess technical specifics (methodologies, pricing, tool names, timelines). If asked something technical or detailed, say a senior consultant will cover it in the discovery meeting, and offer to book it.
+- Be honest and never claim to be human if directly and explicitly asked whether you are a person; otherwise stay focused on the sales conversation.
+- Keep momentum: if the caller is engaged, propose a specific next step ("Would you be open to a quick 20-minute call with one of our senior consultants this week?").
 
-How to behave:
-- Reply with ONLY one short, natural spoken sentence per turn. Keep it under 25 words. Sound human and warm.
-- Respond directly to what the person just said. Ask only ONE question at a time, then wait for their answer.
-- Do not repeat yourself. If you already asked something, move on.
-- Gently move toward booking a short 20-minute call when the moment is right.
-- If the caller mentions a product or name you do not recognise, do NOT pretend to know it; politely ask them to clarify what they mean.
-- Never invent prices, product names, or technical claims. For exact pricing or deep technical detail, offer to bring in a senior consultant.
-- If they are busy or not interested, thank them warmly and offer to follow up.
-
-Never output analysis, planning, numbered steps, lists, headings, markdown, asterisks, or any description of your own thinking. Output only the exact words you would speak."""
+OUTPUT FORMAT: Output ONLY the exact words you would speak. Never output analysis, planning, numbered steps, lists, headings, markdown, asterisks, or any description of your own thinking."""
 
 GREETING = (
     "Hi, this is Aria calling from Briskinfosec, a cybersecurity services company. "
@@ -280,8 +278,8 @@ async def media(ws: WebSocket):
                 else:
                     noise_floor = 0.95 * noise_floor + 0.05 * rms
                 buf_ms = len(audio_buf) / 2 / EXOTEL_RATE * 1000
-                end_by_silence = speaking and silence_ms >= 1200 and buf_ms >= 400
-                end_by_length = speaking and buf_ms >= 7000
+                end_by_silence = speaking and silence_ms >= 700 and buf_ms >= 300
+                end_by_length = speaking and buf_ms >= 4000
                 if end_by_silence or end_by_length:
                     utter = bytes(audio_buf)
                     audio_buf = bytearray()
@@ -291,6 +289,14 @@ async def media(ws: WebSocket):
                     text = await sarvam_stt(pcm16k)
                     text = text.strip()
                     if len(text) < 2:
+                        continue
+                    # Drop bare filler / echo so Aria does not re-greet or derail.
+                    _norm = text.lower().strip(" .,!?")
+                    _filler = {"hello", "hi", "hey", "okay", "ok", "yeah", "yep",
+                               "hmm", "mhm", "uh", "um", "thank you", "thanks",
+                               "thank you very much"}
+                    if _norm in _filler:
+                        logger.info("SKIP filler/echo: %s", text)
                         continue
                     logger.info("USER: %s", text)
                     history.append({"role": "user", "content": text})
