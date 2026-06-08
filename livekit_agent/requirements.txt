@@ -1,0 +1,2 @@
+livekit-agents[sarvam,silero,turn-detector]~=1.5
+python-dotenv~=1.0
