@@ -151,12 +151,37 @@ async def media(ws: WebSocket):
     mute_until = 0.0
     noise_floor = 200.0  # adaptive ambient RMS estimate
 
+    import re as _re
+    def _split_sentences(t):
+        parts = _re.split(r"(?<=[.!?])\s+", t.strip())
+        out = []
+        for p in parts:
+            p = p.strip()
+            if not p:
+                continue
+            # merge very short fragments into previous to avoid choppy TTS
+            if out and len(p) < 12:
+                out[-1] = out[-1] + " " + p
+            else:
+                out.append(p)
+        return out or [t.strip()]
+
     async def say(text):
         nonlocal bot_busy, mute_until, audio_buf, speaking, silence_ms
         bot_busy = True
-        out = await sarvam_tts(text)
-        if out:
-            await send_audio(ws, stream_sid, out)
+        sentences = _split_sentences(text)
+        # Pipeline: synthesize sentence N+1 while sentence N is being played,
+        # so audio starts after only the first sentence's TTS latency.
+        next_task = asyncio.create_task(sarvam_tts(sentences[0])) if sentences else None
+        for idx in range(len(sentences)):
+            out = await next_task if next_task else b""
+            # kick off TTS for the following sentence before we start playing this one
+            if idx + 1 < len(sentences):
+                next_task = asyncio.create_task(sarvam_tts(sentences[idx + 1]))
+            else:
+                next_task = None
+            if out:
+                await send_audio(ws, stream_sid, out)
         # flush any audio captured during playback (echo) and mute briefly
         audio_buf = bytearray()
         speaking = False
