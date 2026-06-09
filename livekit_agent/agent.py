@@ -67,8 +67,8 @@ async def entrypoint(ctx: agents.JobContext):
         # Streaming TTS over Sarvam WebSocket with low-latency buffering.
         tts=sarvam.TTS(
             target_language_code="en-IN",
-            model="bulbul:v3",
-            speaker="priya",
+            model="bulbul:v2",
+            speaker="anushka",
             speech_sample_rate=22050,  # high quality; LiveKit SIP downsamples to telephony
             pace=1.0,
             min_buffer_size=50,  # low so audio starts flowing quickly
