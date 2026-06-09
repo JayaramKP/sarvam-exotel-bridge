@@ -87,6 +87,46 @@ USER steps. Once this is done the agent runs without your machine.
 
 ---
 
+## Part B-Alt - Production deploy WITHOUT the LiveKit CLI (self-host)
+
+You do NOT have to use the LiveKit CLI at all. The agent is a worker that
+connects OUTBOUND to LiveKit Cloud over a WebSocket - it never needs inbound
+ports and never needs `lk cloud auth`. This sidesteps the firewall block on
+`cloud-api.livekit.io` and reuses the Railway/Render setup already in place.
+
+How it works: `python agent.py start` registers the worker with LiveKit
+server using the three env vars below; LiveKit dispatches jobs to it. The
+LiveKit Cloud dashboard still shows the agent (under self-hosted) for
+observability.
+
+USER steps (run on Railway OR Render - pick one, both are already wired up):
+
+1. Point the service at this branch/folder: repo root, branch `livekit-agent`,
+   working dir `livekit_agent/`.
+2. Build command: `pip install -r requirements.txt`
+3. Start command: `python agent.py start`   (use `start`, not `dev`, for prod).
+4. Set these service environment variables (paste the secret values yourself):
+   - `LIVEKIT_URL` = wss://voice-ai-u0razux7.livekit.cloud
+   - `LIVEKIT_API_KEY` = <your LiveKit API key>
+   - `LIVEKIT_API_SECRET` = <your LiveKit API secret>
+   - `SARVAM_API_KEY` = <your Sarvam key>
+5. Deploy. In the logs you should see the worker register and report
+   `registered worker` / a healthy status. No CLI, no browser auth needed.
+6. Health check: the worker serves a 200 on port 8081 at `/` once connected.
+   On Railway/Render this can be the platform health check (optional).
+7. Redeploy after code changes: push to `livekit-agent`, platform rebuilds.
+
+Sizing note (from LiveKit load tests): ~4 cores / 8GB handles 10-25 concurrent
+calls. For a POC a smaller instance is fine; one call needs far less.
+
+When to use which:
+- Part B (CLI deploy): fully managed by LiveKit Cloud, auto-scaling, but needs
+  the CLI + reachability to `cloud-api.livekit.io` (currently firewall-blocked).
+- Part B-Alt (self-host): no CLI, no firewall issue, reuses Railway/Render. You
+  manage the container. Recommended given the blocked CLI auth.
+
+---
+
 ## Part C - Connect a phone number (telephony)
 
 Two options. Pick ONE. Both are USER steps (buying numbers / SIP config
