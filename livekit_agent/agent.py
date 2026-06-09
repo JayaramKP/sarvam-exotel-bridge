@@ -50,10 +50,20 @@ server = AgentServer()
 @server.rtc_session(agent_name="aria")
 async def entrypoint(ctx: agents.JobContext):
     session = AgentSession(
-        # Streaming STT (Sarvam saaras). Confirm exact model id in plugin reference.
-        stt=sarvam.STT(language="en-IN"),
-        # Streaming LLM (Sarvam chat). Confirm exact model id in plugin reference.
-        llm=sarvam.LLM(temperature=0.4),
+        # Streaming STT (Sarvam). Model/flags confirmed via Sarvam plugin docs + Discord.
+        stt=sarvam.STT(
+            language="en-IN",
+            model="saaras:v3",        # latest Sarvam STT, mode control + broad coverage
+            mode="transcribe",
+            sample_rate=16000,          # recommended streaming rate (LiveKit resamples SIP audio)
+            high_vad_sensitivity=True,  # better barge-in / catches short utterances on phone audio
+            flush_signal=True,          # promptly finalize turns (low dead-air)
+        ),
+        # Streaming LLM (Sarvam chat). sarvam-105b = higher quality; sarvam-30b is the lighter/faster alt.
+        llm=sarvam.LLM(
+            model="sarvam-105b",
+            temperature=0.4,
+        ),
         # Streaming TTS over Sarvam WebSocket with low-latency buffering.
         tts=sarvam.TTS(
             target_language_code="en-IN",
@@ -61,8 +71,8 @@ async def entrypoint(ctx: agents.JobContext):
             speaker="anushka",
             speech_sample_rate=8000,  # narrowband telephony
             pace=1.0,
-            min_buffer_size=40,
-            max_chunk_length=120,
+            min_buffer_size=50,  # low so audio starts flowing quickly
+            max_chunk_length=160,  # 150-200 = natural sentence chunking
             send_completion_event=True,
         ),
         vad=silero.VAD.load(),
